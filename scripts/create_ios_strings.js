@@ -139,27 +139,18 @@ module.exports = function(context) {
             });
 
             var proj = xcode.project(getXcodePbxProjPath());
+            proj.parseSync();
 
-            return new Promise(function (resolve, reject) {
-              proj.parse(function (error) {
-                  if (error) {
-                    reject(error);
-                  }
+            writeLocalisationFieldsToXcodeProj(localizableStringsPaths, 'Localizable.strings', proj);
+            writeLocalisationFieldsToXcodeProj(infoPlistPaths, 'InfoPlist.strings', proj);
 
-                  writeLocalisationFieldsToXcodeProj(localizableStringsPaths, 'Localizable.strings', proj);
-                  writeLocalisationFieldsToXcodeProj(infoPlistPaths, 'InfoPlist.strings', proj);
+            fs.writeFileSync(getXcodePbxProjPath(), proj.writeSync());
+            console.log('new pbx project written with localization groups');
 
-                  fs.writeFileSync(getXcodePbxProjPath(), proj.writeSync());
-                  console.log('new pbx project written with localization groups');
-                  
-                  var platformPath   = path.join( context.opts.projectRoot, "platforms", "ios" );
-                  var projectFileApi = require( path.join( platformPath, "/cordova/lib/projectFile.js" ) );
-                  projectFileApi.purgeProjectFileCache( platformPath );
-                  console.log(platformPath + ' purged from project cache');
-                  
-                  resolve();
-              });
-            });
+            var platformPath   = path.join( context.opts.projectRoot, "platforms", "ios" );
+            var projectFileApi = require( path.join( platformPath, "/cordova/lib/projectFile.js" ) );
+            projectFileApi.purgeProjectFileCache( platformPath );
+            console.log(platformPath + ' purged from project cache');
         });
 };
 
