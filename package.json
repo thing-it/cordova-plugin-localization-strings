@@ -35,10 +35,18 @@
     "path": "^0.12.7",
     "glob": "^7.1.3"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "cordova-common": "^3.2.1",
+    "standard-version": "^7.0.0"
+  },
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/thing-it/cordova-plugin-localization-strings/issues"
   },
-  "homepage": "https://github.com/thing-it/cordova-plugin-localization-strings.git"
+  "homepage": "https://github.com/thing-it/cordova-plugin-localization-strings.git",
+  "scripts": {
+    "release": "standard-version",
+    "version": "PLUGIN_VERSION=$npm_package_version node plugin-version && git add plugin.xml",
+    "postversion": "git push && git push --tags && npm publish"
+  }
 }
