@@ -1,17 +1,12 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
-        id="cordova-plugin-localization-strings" version="3.2.2">
-  <name>Localization</name>
-  <description>Cordova Plugin for localizing local strings</description>
-  <license>MIT License</license>
-  <keywords>cordova,internationalization,localization,i18n,l10n</keywords>
-
-  <engines>
-    <engine name="cordova" version=">=6.0.0"/>
-  </engines>
-
-  <preference name="TRANSLATION_PATH" default="translations/app/" />
-
-  <hook src="scripts/create_strings.js" type="after_prepare" />
-
+<?xml version='1.0' encoding='utf-8'?>
+<plugin id="cordova-plugin-localization-strings" version="3.2.4" xmlns="http://apache.org/cordova/ns/plugins/1.0">
+    <name>Localization</name>
+    <description>Cordova Plugin for localizing local strings</description>
+    <license>MIT License</license>
+    <keywords>cordova,internationalization,localization,i18n,l10n</keywords>
+    <engines>
+        <engine name="cordova" version="&gt;=6.0.0" />
+    </engines>
+    <preference default="translations/app/" name="TRANSLATION_PATH" />
+    <hook src="scripts/create_strings.js" type="after_prepare" />
 </plugin>
