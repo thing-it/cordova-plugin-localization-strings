@@ -7,10 +7,11 @@ var path = require('path');
 
 var iosProjFolder;
 var iosPbxProjPath;
+var iosPlatformRoot;
 
 var getValue = function(configDoc, name) {
-    var name = configDoc.getElementsByTagName(name)[0];
-    return name.textContent
+    var nameElement = configDoc.getElementsByTagName(name)[0];
+    return nameElement ? nameElement.textContent : null;
 }
 
 function jsonToDotStrings(jsonObj){
@@ -21,40 +22,79 @@ function jsonToDotStrings(jsonObj){
     return returnString;
 }
 
-function initIosDir(){
+function initIosDir(context){
     if (!iosProjFolder || !iosPbxProjPath) {
-        var config = fs.readFileSync("config.xml").toString();
-        var configDoc = (new xmldom.DOMParser()).parseFromString(config, 'application/xml');
-        var name = getValue(configDoc, "name");
+        const projectRoot = context.opts.projectRoot;
+        const platformPath = path.join(projectRoot, 'platforms', 'ios');
+        // Try to use cordova-ios API (required for Cordova iOS 8.x project naming),
+        // but keep a fallback so the hook doesn't hard-crash in environments where it can't be required.
+        iosPlatformRoot = platformPath;
+        try {
+            // In Cordova iOS 8.x, cordova-ios is vendored under platforms/ios/packages/cordova-ios.
+            // In older setups it may be available via node resolution.
+            let cordova_ios;
+            try {
+                cordova_ios = require('cordova-ios');
+            } catch (e1) {
+                try {
+                    cordova_ios = require(path.join(platformPath, 'packages', 'cordova-ios'));
+                } catch (e2) {
+                    try {
+                        cordova_ios = require(path.join(platformPath, 'node_modules', 'cordova-ios'));
+                    } catch (e3) {
+                        throw new Error('Could not find cordova-ios module');
+                    }
+                }
+            }
+            const iosProject = new cordova_ios('ios', platformPath);
+            iosProjFolder = iosProject.locations.xcodeCordovaProj;
+            iosPbxProjPath = iosProject.locations.pbxproj;
+            iosPlatformRoot = iosProject.locations.root || platformPath;
+            process.stdout.write('[localization-strings] Using cordova-ios API. Platform root: ' + iosPlatformRoot + '\n');
+        } catch (e) {
+            // Fallback: derive project name from config.xml and assume legacy structure
+            console.log('Falling back to config.xml method:', e.message);
+            var config = fs.readFileSync(path.join(projectRoot, "config.xml")).toString();
+            var configDoc = (new xmldom.DOMParser()).parseFromString(config, 'application/xml');
+            var name = getValue(configDoc, "name");
+            iosProjFolder = path.join(platformPath, name);
+            iosPbxProjPath = path.join(platformPath, name + ".xcodeproj", "project.pbxproj");
+            iosPlatformRoot = platformPath;
+            process.stdout.write('[localization-strings] Using fallback method. Platform root: ' + iosPlatformRoot + '\n');
+        }
 
-        iosProjFolder =  "platforms/ios/" + name;
-        iosPbxProjPath = "platforms/ios/" + name + ".xcodeproj/project.pbxproj";
     }
 }
 
-function getTargetIosDir() {
-    initIosDir();
+function getTargetIosDir(context) {
+    initIosDir(context);
     return iosProjFolder;
 }
 
-function getXcodePbxProjPath() {
-    initIosDir();
+function getXcodePbxProjPath(context) {
+    initIosDir(context);
     return iosPbxProjPath;
 }
 
-function writeStringFile(plistStringJsonObj, lang, fileName) {
-    var lProjPath = getTargetIosDir() + "/Resources/" + lang + ".lproj";
-    fs.ensureDir(lProjPath, function (err) {
-        if (!err) {
-            var stringToWrite = jsonToDotStrings(plistStringJsonObj);
-            var buffer = iconv.encode(stringToWrite, 'utf8');
-
-            fs.open(lProjPath + "/" + fileName, 'w', function(err, fd) {
-                if(err) throw err;
-                fs.writeFileSync(fd, buffer);
-            });
+function writeStringFile(context, plistStringJsonObj, lang, fileName) {
+    try {
+        initIosDir(context);
+        if (!iosPlatformRoot) {
+            throw new Error('iosPlatformRoot is not set');
         }
-    });
+        // Cordova iOS 8.x template expects *.lproj folders at the platform root (platforms/ios/<lang>.lproj).
+        var lProjPath = path.join(iosPlatformRoot, lang + ".lproj");
+        fs.ensureDirSync(lProjPath);
+        var stringToWrite = jsonToDotStrings(plistStringJsonObj);
+        var buffer = iconv.encode(stringToWrite, 'utf8');
+        var filePath = path.join(lProjPath, fileName);
+        fs.writeFileSync(filePath, buffer);
+        process.stdout.write('[localization-strings] Created: ' + filePath + '\n');
+    } catch (error) {
+        process.stderr.write('[localization-strings] ERROR writing string file for ' + lang + '/' + fileName + ': ' + error.message + '\n');
+        process.stderr.write('[localization-strings] iosPlatformRoot: ' + iosPlatformRoot + '\n');
+        throw error;
+    }
 }
 
 function writeLocalisationFieldsToXcodeProj(filePaths, groupname, proj) {
@@ -62,34 +102,40 @@ function writeLocalisationFieldsToXcodeProj(filePaths, groupname, proj) {
     var fileRefValues = _.values(fileRefSection);
 
     if (filePaths.length > 0) {
-
-        // var groupKey;
         var groupKey = proj.findPBXVariantGroupKey({name: groupname});
         if (!groupKey) {
-            // findPBXVariantGroupKey with name InfoPlist.strings not found.  creating new group
             var localizableStringVarGroup = proj.addLocalizationVariantGroup(groupname);
             groupKey = localizableStringVarGroup.fileRef;
         }
 
-        filePaths.forEach(function (path) {
+        filePaths.forEach(function (filePath) {
+            // filePath is something like "es.lproj/InfoPlist.strings"
             var results = _.find(fileRefValues, function(o){
-                return  (_.isObject(o) && _.has(o, "path") && o.path.replace(/['"]+/g, '') == path)
+                return (_.isObject(o) && _.has(o, "path") && o.path.replace(/['"]+/g, '') == filePath);
             });
             if (_.isUndefined(results)) {
-                //not found in pbxFileReference yet
-                proj.addResourceFile("Resources/" + path, {variantGroup: true}, groupKey);
+                // Not found in pbxFileReference yet, add it relative to the project root
+                proj.addResourceFile(filePath, {variantGroup: true}, groupKey);
             }
         });
     }
 }
 module.exports = function(context) {
     var xcode = require('xcode');
+    
+    // Log at the very start to ensure we're running
+    process.stdout.write('[localization-strings] Hook started\n');
 
     var localizableStringsPaths = [];
     var infoPlistPaths = [];
 
     return getTargetLang(context)
         .then(function(languages) {
+            process.stdout.write('[localization-strings] Found ' + languages.length + ' translation file(s)\n');
+            if (languages.length === 0) {
+                process.stdout.write('[localization-strings] WARNING: No translation files found. Files will not be created.\n');
+                return Promise.resolve(); // Exit early if no files
+            }
 
             languages.forEach(function(lang){
 
@@ -110,14 +156,11 @@ module.exports = function(context) {
                 }
 
                 _.forEach(localeLangs, function(localeLang){
-                    if (_.has(langJson, "config_ios")) {
-                        //do processing for appname into plist
-                        var plistString = langJson.config_ios;
-                        if (!_.isEmpty(plistString)) {
-                            writeStringFile(plistString, localeLang, "InfoPlist.strings");
-                            infoPlistPaths.push(localeLang + ".lproj/" + "InfoPlist.strings");
-                        }
-                    }
+                    // Always create InfoPlist.strings if iOS locales exist, because Xcode may already
+                    // reference these files in the pbxproj and will fail the build if they're missing.
+                    var plistString = (_.has(langJson, "config_ios") && !_.isEmpty(langJson.config_ios)) ? langJson.config_ios : {};
+                    writeStringFile(context, plistString, localeLang, "InfoPlist.strings");
+                    infoPlistPaths.push(localeLang + ".lproj/" + "InfoPlist.strings");
 
                     //remove APP_NAME and write to Localizable.strings
                     if (_.has(langJson, "app")) {
@@ -130,7 +173,7 @@ module.exports = function(context) {
                         }
                         
                         if (!_.isEmpty(localizableStringsJson)) {
-                            writeStringFile(localizableStringsJson, localeLang, "Localizable.strings");
+                            writeStringFile(context, localizableStringsJson, localeLang, "Localizable.strings");
                             localizableStringsPaths.push(localeLang + ".lproj/" + "Localizable.strings");
                         }
                     }
@@ -138,19 +181,24 @@ module.exports = function(context) {
 
             });
 
-            var proj = xcode.project(getXcodePbxProjPath());
+            var proj = xcode.project(getXcodePbxProjPath(context));
             proj.parseSync();
 
             writeLocalisationFieldsToXcodeProj(localizableStringsPaths, 'Localizable.strings', proj);
             writeLocalisationFieldsToXcodeProj(infoPlistPaths, 'InfoPlist.strings', proj);
 
-            fs.writeFileSync(getXcodePbxProjPath(), proj.writeSync());
-            console.log('new pbx project written with localization groups');
+            fs.writeFileSync(getXcodePbxProjPath(context), proj.writeSync());
+            console.log('Pbx project written with localization groups [ ' + infoPlistPaths.map(function(p) { return p.split('.')[0]; }).join(', ') + ' ]');
 
             var platformPath   = path.join( context.opts.projectRoot, "platforms", "ios" );
             var projectFileApi = require( path.join( platformPath, "/cordova/lib/projectFile.js" ) );
             projectFileApi.purgeProjectFileCache( platformPath );
             console.log(platformPath + ' purged from project cache');
+        })
+        .catch(function(error) {
+            process.stderr.write('[localization-strings] ERROR in create_ios_strings hook: ' + error.message + '\n');
+            process.stderr.write('[localization-strings] Stack: ' + (error.stack || 'N/A') + '\n');
+            throw error;
         });
 };
 
@@ -186,7 +234,7 @@ function getTargetLang(context) {
     var glob = require('glob');
     var providedTranslationPathPattern;
     var providedTranslationPathRegex;
-    var config = fs.readFileSync("config.xml").toString();  
+    var config = fs.readFileSync(path.join(context.opts.projectRoot, "config.xml")).toString();  
     var PATH = getTranslationPath(config, "TRANSLATION_PATH");
 
     if(PATH == null){
@@ -207,16 +255,25 @@ function getTargetLang(context) {
     }
 
     return new Promise(function (resolve, reject) {
-      glob(providedTranslationPathPattern, function(error, langFiles) {
+      // Ensure glob searches from project root
+      var absolutePattern = path.isAbsolute(providedTranslationPathPattern) 
+        ? providedTranslationPathPattern 
+        : path.join(context.opts.projectRoot, providedTranslationPathPattern);
+      
+      glob(absolutePattern, function(error, langFiles) {
         if (error) {
           reject(error);
+          return;
         }
         langFiles.forEach(function(langFile) {
-          var matches = langFile.match(providedTranslationPathRegex);
+          // langFile from glob is absolute when pattern is absolute
+          // Match against the absolute path, but regex expects relative pattern
+          var relativePath = path.relative(context.opts.projectRoot, langFile);
+          var matches = relativePath.match(providedTranslationPathRegex);
           if (matches) {
             targetLangArr.push({
               lang: matches[1],
-              path: path.join(context.opts.projectRoot, langFile)
+              path: langFile
             });
           }
         });
